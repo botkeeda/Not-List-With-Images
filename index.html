@@ -27,6 +27,7 @@
     font-weight: 600; background: #38bdf8; color: #0f172a; margin-top: 10px; cursor: pointer;
   }
   button:active { transform: scale(0.98); }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
   .btn-camera { background: #10b981; color: #fff; }
   .btn-gallery { background: #6366f1; color: #fff; margin-top: 8px; }
   .preview { margin-top: 10px; text-align: center; }
@@ -54,6 +55,7 @@
   .err { color: #ef4444; font-size: 13px; margin-top: 8px; height: 16px; text-align: center;}
   .hidden { display: none !important; }
   .settings-box { background: #0f172a; padding: 10px; border-radius: 10px; margin-bottom: 15px; border: 1px solid #334155;}
+  .status-msg { font-size: 13px; text-align: center; margin-top: 8px; font-weight: bold;}
 </style>
 </head>
 <body>
@@ -64,17 +66,18 @@
   <input type="password" id="passInput" placeholder="••••" inputmode="numeric" maxlength="20">
   <button onclick="unlock()">Unlock</button>
   <div class="err" id="passErr"></div>
-  <div style="margin-top:20px; font-size:12px; color:#64748b; text-align:center;">Loading data from GitHub...</div>
+  <div style="margin-top:20px; font-size:12px; color:#64748b; text-align:center;" id="loadStatus">Checking GitHub...</div>
 </div>
 
 <!-- Main App -->
 <div id="app" class="hidden">
   <h1>📝 My Digital Notes</h1>
 
-  <!-- GitHub Settings (Token) -->
+  <!-- GitHub Settings -->
   <div class="settings-box">
-    <label>GitHub Token (Required for sync)</label>
+    <label>GitHub Token</label>
     <input type="password" id="tokenInput" placeholder="ghp_xxxxxxxxxxxxxxxx" onchange="saveToken()">
+    <div class="status-msg" id="tokenStatus"></div>
   </div>
 
   <!-- Note Form -->
@@ -85,7 +88,7 @@
     <label style="margin-top:12px;">Note</label>
     <textarea id="noteInput" placeholder="Write your note here..."></textarea>
 
-    <label style="margin-top:12px;">Image (camera or gallery)</label>
+    <label style="margin-top:12px;">Image</label>
     <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
     <button class="btn-camera" onclick="document.getElementById('cameraInput').click()">📷 Open Camera</button>
 
@@ -93,11 +96,12 @@
     <button class="btn-gallery" onclick="document.getElementById('galleryInput').click()">🖼️ Upload from Gallery</button>
 
     <div class="preview" id="preview"></div>
+    <div class="status-msg" id="saveStatus"></div>
 
-    <button onclick="saveNote()" style="margin-top: 20px; background: #38bdf8;">💾 Save Note</button>
+    <button onclick="saveNote()" style="margin-top: 20px; background: #38bdf8;" id="saveBtn">💾 Save Note</button>
   </div>
 
-  <!-- Change Password Form -->
+  <!-- Change Password -->
   <div class="card" style="background:#1e1e2f;">
     <label style="font-size:15px; color:#ef4444; font-weight:bold;">Change Password</label>
     <input type="password" id="oldPass" placeholder="Old Password" style="margin-top:8px;">
@@ -110,56 +114,73 @@
 </div>
 
 <script>
-  // ====== GITHUB CONFIG ======
   const GITHUB_USER = "botkeeda";
   const GITHUB_REPO = "Not-List-With-Images";
-  const GITHUB_BRANCH = "main"; // agar master hai toh "master" kar dein
+  const GITHUB_BRANCH = "main"; 
 
   const STORAGE_KEY = "my_digital_notes";
   const PASS_KEY = "my_notes_password";
-  const TOKEN_KEY = "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";
+  const TOKEN_KEY = "my_github_token";
 
   let currentImage = null;
-  let globalPassword = "1234"; // Default password
+  let globalPassword = "1234";
 
-  // ====== GitHub API Functions ======
-  
-  function getToken() {
-    return localStorage.getItem(TOKEN_KEY) || "";
+  function getToken() { return localStorage.getItem(TOKEN_KEY) || ""; }
+
+  function showStatus(elementId, msg, isError = false) {
+    const el = document.getElementById(elementId);
+    if(!el) return;
+    el.textContent = msg;
+    el.style.color = isError ? "#ef4444" : "#10b981"; // Red for error, Green for success
   }
 
   function saveToken() {
     const token = document.getElementById('tokenInput').value.trim();
+    if (!token) {
+      showStatus('tokenStatus', "Token khali hai!", true);
+      return;
+    }
     localStorage.setItem(TOKEN_KEY, token);
-    alert("Token saved! Now you can sync.");
-    // Auto-fetch after token save
-    loadDataFromGitHub();
+    showStatus('tokenStatus', "Token saved. Syncing...");
+    loadDataFromGitHub().then(() => {
+        showStatus('tokenStatus', "Sync complete!");
+    }).catch(e => {
+        showStatus('tokenStatus', "Sync failed. Check console.", true);
+    });
   }
 
-  // Base64 Encode/Decode for GitHub API
   function utf8_to_b64(str) { return btoa(encodeURIComponent(str).replace(/%([0-9A-F]{2})/g, function(match, p1) { return String.fromCharCode('0x' + p1); })); }
   function b64_to_utf8(str) { return decodeURIComponent(Array.prototype.map.call(atob(str), function(c) { return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2); }).join('')); }
 
+  // --- GitHub API: Get File ---
   async function getFileFromGitHub(path) {
     const token = getToken();
     if (!token) return null;
     try {
-      const res = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}?ref=${GITHUB_BRANCH}`, {
-        headers: { "Authorization": `token ${token}` }
+      const url = `https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}?ref=${GITHUB_BRANCH}`;
+      const res = await fetch(url, {
+        headers: { "Authorization": `Bearer ${token}`, "Accept": "application/vnd.github+json" }
       });
+      
       if (res.ok) {
         const data = await res.json();
         return { content: data.content, sha: data.sha };
+      } else {
+        // 404 ka matlab file nahi hai, baqi errors real hain
+        if (res.status !== 404) {
+            const errorData = await res.json();
+            console.error(`GET Error (${path}):`, res.status, errorData.message);
+        }
+        return null;
       }
-      return null;
     } catch (e) { console.error("Fetch error:", e); return null; }
   }
 
+  // --- GitHub API: Upload File ---
   async function uploadFileToGitHub(path, base64Content, commitMsg) {
     const token = getToken();
-    if (!token) { alert("Please enter GitHub Token first!"); return false; }
+    if (!token) { showStatus('saveStatus', "Token required!", true); return false; }
     
-    // Check if file exists to get SHA
     let sha = null;
     const existing = await getFileFromGitHub(path);
     if (existing) sha = existing.sha;
@@ -168,8 +189,9 @@
       const res = await fetch(`https://api.github.com/repos/${GITHUB_USER}/${GITHUB_REPO}/contents/${path}`, {
         method: "PUT",
         headers: {
-          "Authorization": `token ${token}`,
-          "Content-Type": "application/json"
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json",
+          "Accept": "application/vnd.github+json"
         },
         body: JSON.stringify({
           message: commitMsg,
@@ -178,16 +200,26 @@
           branch: GITHUB_BRANCH
         })
       });
-      return res.ok;
-    } catch (e) { console.error("Upload error:", e); return false; }
+      
+      if (!res.ok) {
+          const err = await res.json();
+          console.error(`PUT Error (${path}):`, res.status, err.message);
+          showStatus('saveStatus', `GitHub Error: ${err.message}`, true);
+          return false;
+      }
+      return true;
+    } catch (e) { 
+      console.error("Upload network error:", e); 
+      showStatus('saveStatus', "Network Error!", true);
+      return false; 
+    }
   }
 
-  // ====== Load Data (Password & Notes) ======
+  // --- Load Data ---
   async function loadDataFromGitHub() {
     const token = getToken();
     if (!token) return;
 
-    // 1. Load Password
     const passFile = await getFileFromGitHub("password.json");
     if (passFile) {
       try {
@@ -197,13 +229,8 @@
           localStorage.setItem(PASS_KEY, globalPassword);
         }
       } catch(e) {}
-    } else {
-      // Create default password.json if not exists
-      const defPass = { password: "1234" };
-      await uploadFileToGitHub("password.json", utf8_to_b64(JSON.stringify(defPass)), "Create default password.json");
     }
 
-    // 2. Load Notes
     const notesFile = await getFileFromGitHub("data.json");
     if (notesFile) {
       try {
@@ -216,12 +243,9 @@
     }
   }
 
-  // ====== App Logic ======
   function unlock() {
     const val = document.getElementById('passInput').value;
-    // Check against local storage password (synced from GitHub) or fallback
     const savedPass = localStorage.getItem(PASS_KEY) || globalPassword;
-    
     if (val === savedPass) {
       document.getElementById('lockScreen').classList.add('hidden');
       document.getElementById('app').classList.remove('hidden');
@@ -231,11 +255,9 @@
       document.getElementById('passErr').textContent = "Galat password!";
     }
   }
-  document.getElementById('passInput').addEventListener('keypress', e => {
-    if (e.key === 'Enter') unlock();
-  });
+  document.getElementById('passInput').addEventListener('keypress', e => { if (e.key === 'Enter') unlock(); });
 
-  // ---- Image Compress & Upload to GitHub ----
+  // --- Image Compress ---
   function handleImageUpload(e) {
     const file = e.target.files[0];
     if (!file) return;
@@ -244,11 +266,11 @@
     reader.onload = function(ev) {
       const img = new Image();
       img.onload = function() {
-        // Compress image using Canvas to save space
         const canvas = document.createElement('canvas');
         let width = img.width;
         let height = img.height;
-        const MAX_SIZE = 800; // Max 800px
+        // Compress to smaller size to avoid GitHub limits
+        const MAX_SIZE = 600; 
 
         if (width > height) {
           if (width > MAX_SIZE) { height *= MAX_SIZE / width; width = MAX_SIZE; }
@@ -260,9 +282,7 @@
         const ctx = canvas.getContext('2d');
         ctx.drawImage(img, 0, 0, width, height);
         
-        // Get compressed base64 (0.7 quality jpeg)
-        const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
-        currentImage = compressedBase64;
+        currentImage = canvas.toDataURL('image/jpeg', 0.6); // Lower quality for smaller size
         document.getElementById('preview').innerHTML = `<img src="${currentImage}">`;
       };
       img.src = ev.target.result;
@@ -272,35 +292,47 @@
   document.getElementById('cameraInput').addEventListener('change', handleImageUpload);
   document.getElementById('galleryInput').addEventListener('change', handleImageUpload);
 
-  // ---- Save Note ----
+  // --- Save Note ---
   async function saveNote() {
+    const btn = document.getElementById('saveBtn');
     const title = document.getElementById('titleInput').value.trim();
     const text = document.getElementById('noteInput').value.trim();
+    
     if (!title && !text && !currentImage) {
       alert("Kuch to likho ya image lagao!");
       return;
     }
 
+    btn.textContent = "Saving...";
+    btn.disabled = true;
+    showStatus('saveStatus', "");
+
     let imageUrl = "";
     const token = getToken();
 
-    // Upload image to GitHub if token exists
+    // 1. Upload Image (if exists)
     if (currentImage && token) {
+      showStatus('saveStatus', "Uploading image...");
       const base64Data = currentImage.split(',')[1];
       const fileName = `images/img_${Date.now()}.jpg`;
       
-      const success = await uploadFileToGitHub(fileName, base64Data, `Upload image ${fileName}`);
-      if (success) {
-        // Save direct raw URL
+      const imgSuccess = await uploadFileToGitHub(fileName, base64Data, `Upload image ${fileName}`);
+      
+      if (imgSuccess) {
         imageUrl = `https://raw.githubusercontent.com/${GITHUB_USER}/${GITHUB_REPO}/${GITHUB_BRANCH}/${fileName}`;
+        showStatus('saveStatus', "Image uploaded. Saving data...");
       } else {
-        // Fallback to local base64 if upload fails
-        imageUrl = currentImage; 
+        // Agar image fail ho jaye toh note save mat karo, user ko batao
+        alert("Image GitHub par upload nahi ho payi. Internet ya Token check karein.");
+        btn.textContent = "💾 Save Note";
+        btn.disabled = false;
+        return; 
       }
     } else if (currentImage) {
-       imageUrl = currentImage; // Save locally if no token
+       imageUrl = currentImage; 
     }
 
+    // 2. Save Data JSON
     const notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
     notes.unshift({
       id: Date.now(),
@@ -310,16 +342,19 @@
       date: new Date().toLocaleString()
     });
     
-    // Save locally
     localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
 
-    // Sync to GitHub if token exists
     if (token) {
       const dataJson = JSON.stringify(notes, null, 2);
-      await uploadFileToGitHub("data.json", utf8_to_b64(dataJson), "Update notes data");
+      const dataSuccess = await uploadFileToGitHub("data.json", utf8_to_b64(dataJson), "Update notes");
+      if(dataSuccess) {
+          showStatus('saveStatus', "✅ Note & Image Saved to GitHub!", false);
+      } else {
+          showStatus('saveStatus', "Note saved locally, but GitHub sync failed.", true);
+      }
     }
 
-    // Reset form
+    // Reset
     document.getElementById('titleInput').value = "";
     document.getElementById('noteInput').value = "";
     document.getElementById('cameraInput').value = "";
@@ -327,15 +362,16 @@
     document.getElementById('preview').innerHTML = "";
     currentImage = null;
 
+    btn.textContent = "💾 Save Note";
+    btn.disabled = false;
     renderNotes();
   }
 
-  // ---- Render Notes ----
   function renderNotes() {
     const notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
     const list = document.getElementById('notesList');
     if (notes.length === 0) {
-      list.innerHTML = '<div class="empty">Koi note nahi hai abhi. Pehla note banao! ✍️</div>';
+      list.innerHTML = '<div class="empty">Koi note nahi hai abhi.</div>';
       return;
     }
     list.innerHTML = notes.map(n => `
@@ -349,16 +385,13 @@
     `).join("");
   }
 
-  // ---- Delete Note ----
   async function deleteNote(id) {
-    if (!confirm("Ye note delete karna hai?")) return;
-    
+    if (!confirm("Delete?")) return;
     let notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
     notes = notes.filter(n => n.id !== id);
     localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
     renderNotes();
 
-    // Sync delete to GitHub
     const token = getToken();
     if (token) {
       const dataJson = JSON.stringify(notes, null, 2);
@@ -366,58 +399,43 @@
     }
   }
 
-  // ---- Change Password ----
   async function changePassword() {
     const oldPass = document.getElementById('oldPass').value;
     const newPass = document.getElementById('newPass').value;
     const savedPass = localStorage.getItem(PASS_KEY) || globalPassword;
 
-    if (oldPass !== savedPass) {
-      alert("Purana password galat hai!");
-      return;
-    }
-    if (newPass.length < 4) {
-      alert("Naya password kam se kam 4 characters ka hona chahiye!");
-      return;
-    }
+    if (oldPass !== savedPass) { alert("Purana password galat!"); return; }
+    if (newPass.length < 4) { alert("Kam se kam 4 characters!"); return; }
 
     const token = getToken();
-    if (!token) {
-      alert("Password update karne ke liye GitHub Token zaroori hai!");
-      return;
-    }
+    if (!token) { alert("GitHub Token zaroori hai!"); return; }
 
-    // Update locally
     globalPassword = newPass;
     localStorage.setItem(PASS_KEY, newPass);
 
-    // Update on GitHub
     const passData = { password: newPass };
     const success = await uploadFileToGitHub("password.json", utf8_to_b64(JSON.stringify(passData)), "Update password");
     
     if (success) {
-      alert("✅ Password successfully update ho gaya aur GitHub par save ho gaya!");
+      alert("✅ Password update ho gaya!");
       document.getElementById('oldPass').value = "";
       document.getElementById('newPass').value = "";
     } else {
-      alert("❌ GitHub par save nahi ho paya. Token check karein.");
+      alert("❌ Save failed. Token check karein.");
     }
   }
 
-  // ---- Utilities ----
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, m => ({
       '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
     }[m]));
   }
 
-  // Try to auto load on startup if token exists
   window.addEventListener('load', () => {
     if (getToken()) {
-      loadDataFromGitHub().then(() => {
-        // Default password update if loaded from github
-        globalPassword = localStorage.getItem(PASS_KEY) || "1234";
-      });
+      loadDataFromGitHub().catch(e => console.error("Auto-load error:", e));
+    } else {
+        document.getElementById('loadStatus').textContent = "Enter token to sync.";
     }
   });
 </script>
