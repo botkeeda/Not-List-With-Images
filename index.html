@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>My Notes - Digital Locker</title>
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #0f172a; color: #e2e8f0; padding: 16px; min-height: 100vh;
+  }
+  h1 { font-size: 22px; text-align: center; margin: 8px 0 16px; }
+  .card {
+    background: #1e293b; border-radius: 14px; padding: 16px; margin-bottom: 16px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+  }
+  label { font-size: 13px; color: #94a3b8; display: block; margin-bottom: 6px; }
+  input[type="text"], textarea, input[type="password"] {
+    width: 100%; padding: 12px; border-radius: 10px; border: 1px solid #334155;
+    background: #0f172a; color: #e2e8f0; font-size: 15px; outline: none;
+  }
+  textarea { resize: vertical; min-height: 80px; }
+  input:focus, textarea:focus { border-color: #38bdf8; }
+  button {
+    width: 100%; padding: 13px; border-radius: 10px; border: none; font-size: 15px;
+    font-weight: 600; background: #38bdf8; color: #0f172a; margin-top: 10px; cursor: pointer;
+  }
+  button:active { transform: scale(0.98); }
+  .btn-camera { background: #10b981; color: #fff; }
+  .btn-gallery { background: #6366f1; color: #fff; margin-top: 8px; }
+  .preview { margin-top: 10px; text-align: center; }
+  .preview img { max-width: 100%; max-height: 200px; border-radius: 10px; }
+  .note-item {
+    background: #0f172a; border-radius: 12px; padding: 12px; margin-bottom: 12px;
+    border: 1px solid #334155;
+  }
+  .note-item img { width: 100%; border-radius: 10px; margin-top: 8px; max-height: 260px; object-fit: cover; }
+  .note-title { font-weight: 700; font-size: 16px; margin-bottom: 4px; color: #38bdf8; }
+  .note-text { font-size: 14px; color: #cbd5e1; white-space: pre-wrap; word-break: break-word; }
+  .note-date { font-size: 11px; color: #64748b; margin-top: 6px; }
+  .del-btn {
+    background: #ef4444; color: #fff; padding: 8px 12px; font-size: 13px;
+    width: auto; margin-top: 10px; border-radius: 8px;
+  }
+  .empty { text-align: center; color: #64748b; padding: 30px 0; font-size: 14px; }
+  #lockScreen {
+    position: fixed; inset: 0; background: #0f172a; display: flex; flex-direction: column;
+    justify-content: center; align-items: center; padding: 30px; z-index: 999;
+  }
+  #lockScreen h2 { color: #38bdf8; margin-bottom: 16px; }
+  #lockScreen input { max-width: 280px; text-align: center; font-size: 18px; letter-spacing: 4px; }
+  #lockScreen button { max-width: 280px; }
+  .err { color: #ef4444; font-size: 13px; margin-top: 8px; height: 16px; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<!-- Lock Screen -->
+<div id="lockScreen">
+  <h2>🔒 Enter Password</h2>
+  <input type="password" id="passInput" placeholder="••••" inputmode="numeric" maxlength="8">
+  <button onclick="unlock()">Unlock</button>
+  <div class="err" id="passErr"></div>
+</div>
+
+<!-- Main App -->
+<div id="app" class="hidden">
+  <h1>📝 My Digital Notes</h1>
+
+  <div class="card">
+    <label>Title</label>
+    <input type="text" id="titleInput" placeholder="Note title...">
+
+    <label style="margin-top:12px;">Note</label>
+    <textarea id="noteInput" placeholder="Write your note here..."></textarea>
+
+    <label style="margin-top:12px;">Image (camera or gallery)</label>
+    
+    <!-- Camera Input (Direct Camera open karne ke liye) -->
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" style="display:none;">
+    <button class="btn-camera" onclick="document.getElementById('cameraInput').click()">📷 Open Camera</button>
+
+    <!-- Gallery Input (File Manager se select karne ke liye) -->
+    <input type="file" id="galleryInput" accept="image/*" style="display:none;">
+    <button class="btn-gallery" onclick="document.getElementById('galleryInput').click()">🖼️ Upload from Gallery</button>
+
+    <div class="preview" id="preview"></div>
+
+    <button onclick="saveNote()" style="margin-top: 20px; background: #38bdf8;">💾 Save Note</button>
+  </div>
+
+  <h2 style="font-size:16px; color:#94a3b8; margin:16px 4px 10px;">Saved Notes</h2>
+  <div id="notesList"></div>
+</div>
+
+<script>
+  // ====== CHANGE PASSWORD HERE ======
+  const PASSWORD = "1234";
+
+  const STORAGE_KEY = "my_digital_notes";
+  let currentImage = null;
+
+  // ---- Lock ----
+  function unlock() {
+    const val = document.getElementById('passInput').value;
+    if (val === PASSWORD) {
+      document.getElementById('lockScreen').classList.add('hidden');
+      document.getElementById('app').classList.remove('hidden');
+      renderNotes();
+    } else {
+      document.getElementById('passErr').textContent = "Galat password!";
+    }
+  }
+  document.getElementById('passInput').addEventListener('keypress', e => {
+    if (e.key === 'Enter') unlock();
+  });
+
+  // ---- Image upload logic (Dono inputs ke liye) ----
+  function handleImageUpload(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      currentImage = ev.target.result;
+      document.getElementById('preview').innerHTML = `<img src="${currentImage}">`;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  document.getElementById('cameraInput').addEventListener('change', handleImageUpload);
+  document.getElementById('galleryInput').addEventListener('change', handleImageUpload);
+
+  // ---- Save note ----
+  function saveNote() {
+    const title = document.getElementById('titleInput').value.trim();
+    const text = document.getElementById('noteInput').value.trim();
+    if (!title && !text && !currentImage) {
+      alert("Kuch to likho ya image lagao!");
+      return;
+    }
+    const notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    notes.unshift({
+      id: Date.now(),
+      title: title || "Untitled",
+      text: text,
+      image: currentImage,
+      date: new Date().toLocaleString()
+    });
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+
+    // Reset form
+    document.getElementById('titleInput').value = "";
+    document.getElementById('noteInput').value = "";
+    document.getElementById('cameraInput').value = "";
+    document.getElementById('galleryInput').value = "";
+    document.getElementById('preview').innerHTML = "";
+    currentImage = null;
+
+    renderNotes();
+  }
+
+  // ---- Render notes ----
+  function renderNotes() {
+    const notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    const list = document.getElementById('notesList');
+    if (notes.length === 0) {
+      list.innerHTML = '<div class="empty">Koi note nahi hai abhi. Pehla note banao! ✍️</div>';
+      return;
+    }
+    list.innerHTML = notes.map(n => `
+      <div class="note-item">
+        <div class="note-title">${escapeHtml(n.title)}</div>
+        ${n.text ? `<div class="note-text">${escapeHtml(n.text)}</div>` : ""}
+        ${n.image ? `<img src="${n.image}">` : ""}
+        <div class="note-date">${n.date}</div>
+        <button class="del-btn" onclick="deleteNote(${n.id})">🗑 Delete</button>
+      </div>
+    `).join("");
+  }
+
+  function deleteNote(id) {
+    if (!confirm("Ye note delete karna hai?")) return;
+    let notes = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]");
+    notes = notes.filter(n => n.id !== id);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(notes));
+    renderNotes();
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, m => ({
+      '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+    }[m]));
+  }
+</script>
+</body>
+</html>
